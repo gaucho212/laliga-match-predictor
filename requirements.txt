@@ -1,0 +1,28 @@
+# --- Data Manipulation & Core ---
+pandas>=2.2.0,<3.0.0
+numpy>=1.26.0,<2.0.0
+pyarrow>=15.0.0            # Szybki odczyt/zapis w formacie Parquet (zachowanie typów danych)
+scipy>=1.12.0              # Estymacja rozkładu Poissona i optymalizacja funkcji celu
+
+# --- Data Ingestion & Scraping ---
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+soccerdata>=1.8.0          # Wrapper do pobierania zaawansowanych metryk (xG, xGA z Understat/FBref)
+lxml>=5.1.0
+
+# --- Machine Learning & Evaluation ---
+scikit-learn>=1.4.0
+lightgbm>=4.3.0            # Model docelowy (szybki, odporny na brakujące dane)
+xgboost>=2.0.0
+shap>=0.45.0               # Wyjaśnialność modelu (Feature Importance & Explainable AI)
+
+# --- Visualisation & BI Dashboard ---
+streamlit>=1.32.0          # Interfejs aplikacji BI
+plotly>=5.20.0             # Interaktywne wykresy w Streamlicie (macierze pomyłek, krzywe kalibracji)
+seaborn>=0.13.0
+matplotlib>=3.8.0
+
+# --- Engineering & Quality Assurance ---
+pydantic>=2.6.0            # Walidacja schematów danych
+pyyaml>=6.0.1              # Odczyt plików konfiguracyjnych config.yaml
+pytest>=8.0.0              # Testy jednostkowe funkcji feature engineeringu
