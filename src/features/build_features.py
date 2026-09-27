@@ -110,6 +110,96 @@ def create_team_match_long_table(df_matches: pd.DataFrame) -> pd.DataFrame:
     )
     return df_long
 
+def calculate_rest_days(
+    df_long: pd.DataFrame, max_rest_cap: int = 21
+) -> pd.DataFrame:
+    """Oblicza liczbę dni odpoczynku od poprzedniego oficjalnego meczu dla każdej drużyny.
+
+    Dla pierwszego meczu w sezonie (lub po długiej przerwie letniej) wartość jest
+    ograniczana z góry (capping), aby uniknąć anomalii numerycznych (outliers).
+
+    Args:
+        df_long: Posortowana chronologicznie tabela Long (team, match_date).
+        max_rest_cap: Maksymalna liczba dni odpoczynku (wartość nasycenia).
+
+    Returns:
+        pd.DataFrame: Ramka z dodaną kolumną 'rest_days'.
+    """
+    logger.info("Kalkulacja dni odpoczynku (Rest Days)...")
+    df = df_long.copy()
+
+    # Różnica dat w dniach względem poprzedniego meczu TEJ SAMEJ drużyny
+    df["prev_match_date"] = df.groupby("team")["match_date"].shift(1)
+    df["rest_days"] = (df["match_date"] - df["prev_match_date"]).dt.days
+
+    # Pierwszy mecz w sezonie lub przerwa letnia: uzupełniamy medianą lub wartością graniczną
+    # 7 dni to standardowy mikrocykl tygodniowy w lidze
+    df["rest_days"] = df["rest_days"].fillna(max_rest_cap)
+
+    # Capping – 90 dni przerwy wakacyjnej nie oznacza 10x lepszej regeneracji niż 14 dni
+    df["rest_days"] = df["rest_days"].clip(lower=2, upper=max_rest_cap)
+
+    df.drop(columns=["prev_match_date"], inplace=True)
+    return df
+
+def add_rolling_metrics(
+    df_long: pd.DataFrame, windows: list[int] = [3, 5]
+) -> pd.DataFrame:
+    """Generuje metryki kroczące formy sportowej z rygorystyczną eliminacją Data Leakage.
+
+    Każda metryka jest przesuwana o 1 mecz wstecz (.shift(1)) przed wykonaniem .rolling().
+
+    Args:
+        df_long: Tabela Long z podstawowymi statystykami meczowymi.
+        windows: Lista rozmiarów okien czasowych (liczba poprzednich meczów).
+
+    Returns:
+        pd.DataFrame: Tabela Long wzbogacona o cechy kroczące.
+    """
+    logger.info("Generowanie metryk kroczących (Rolling Features)...")
+    df = df_long.copy()
+
+    # 1. Metryki bazowe na poziomie pojedynczego meczu
+    df["xg_diff"] = df["xg_for"] - df["xg_against"]
+
+    # SOTR: obsługa dzielenia przez zero, gdy w meczu nie padł żaden strzał celny
+    total_sot = df["sot_for"] + df["sot_against"]
+    df["sotr"] = np.where(total_sot > 0, df["sot_for"] / total_sot, 0.5)
+
+    # 2. Obliczanie średnich kroczących w pętli po oknach
+    for w in windows:
+        # Rolling xG Differential
+        df[f"roll_xg_diff_{w}"] = (
+            df.groupby("team")["xg_diff"]
+            .transform(lambda s: s.shift(1).rolling(window=w, min_periods=1).mean())
+        )
+
+        # Rolling xG For (jakość ataku)
+        df[f"roll_xg_for_{w}"] = (
+            df.groupby("team")["xg_for"]
+            .transform(lambda s: s.shift(1).rolling(window=w, min_periods=1).mean())
+        )
+
+        # Rolling xG Against (szczelność defensywy)
+        df[f"roll_xg_against_{w}"] = (
+            df.groupby("team")["xg_against"]
+            .transform(lambda s: s.shift(1).rolling(window=w, min_periods=1).mean())
+        )
+
+        # Rolling Shots on Target Ratio
+        df[f"roll_sotr_{w}"] = (
+            df.groupby("team")["sotr"]
+            .transform(lambda s: s.shift(1).rolling(window=w, min_periods=1).mean())
+        )
+
+        # Rolling Points Per Game (Forma punktowa)
+        df[f"roll_ppg_{w}"] = (
+            df.groupby("team")["points"]
+            .transform(lambda s: s.shift(1).rolling(window=w, min_periods=1).mean())
+        )
+
+    return df
+
 
 if __name__ == "__main__":
     merged_input_path = PROCESSED_DATA_DIR / "matches_merged.parquet"
@@ -118,8 +208,11 @@ if __name__ == "__main__":
 
     df_clean = pd.read_parquet(merged_input_path)
     df_team_match = create_team_match_long_table(df_clean)
+    
+    df_with_rest = calculate_rest_days(df_team_match)
+    df_features_long = add_rolling_metrics(df_with_rest)    
 
     # Zapis do warstwy interim/processed pod dalszy Feature Engineering
     long_output_path = PROCESSED_DATA_DIR / "team_matches_long.parquet"
-    df_team_match.to_parquet(long_output_path, index=False)
+    df_features_long.to_parquet(long_output_path, index=False)
     logger.info("Zapisano tabelę bazową Long do: %s", long_output_path)
