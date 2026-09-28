@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import List, Tuple
 import numpy as np
 import pandas as pd
+from elo_rating import compute_historical_elo
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -200,19 +202,96 @@ def add_rolling_metrics(
 
     return df
 
+def create_analytical_mart(
+    df_matches_wide: pd.DataFrame,
+    df_long_features: pd.DataFrame,
+) -> pd.DataFrame:
+    """Łączy cechy meczowe (Elo) z cechami kroczącymi zespołów (Long) w jedną tabelę (Wide).
+
+    Gwarantuje usunięcie zmiennych generujących wyciek danych (post-match stats).
+
+    Args:
+        df_matches_wide: Tabela meczowa wzbogacona o ratingi Elo (z elo.py).
+        df_long_features: Tabela Long z wyliczonymi metrykami kroczącymi i dniami odpoczynku.
+
+    Returns:
+        pd.DataFrame: Zintegrowana tabela analityczna gotowa do modelowania ML.
+    """
+    logger.info("Budowa ostatecznej tabeli analitycznej (Analytical Mart Wide)...")
+
+    # 1. Rozdzielenie tabeli Long na perspektywę gospodarzy i gości
+    rolling_cols = [c for c in df_long_features.columns if c.startswith("roll_")]
+    cols_to_extract = ["match_id", "rest_days"] + rolling_cols
+
+    home_features = df_long_features[df_long_features["is_home"] == 1][cols_to_extract].copy()
+    away_features = df_long_features[df_long_features["is_home"] == 0][cols_to_extract].copy()
+
+    # Dodanie jednoznacznych prefiksów
+    home_features.rename(
+        columns={c: f"home_{c}" for c in home_features.columns if c != "match_id"},
+        inplace=True,
+    )
+    away_features.rename(
+        columns={c: f"away_{c}" for c in away_features.columns if c != "match_id"},
+        inplace=True,
+    )
+
+    # 2. Złączenie cech z tabelą meczową Wide
+    mart = df_matches_wide.merge(home_features, on="match_id", how="inner")
+    mart = mart.merge(away_features, on="match_id", how="inner")
+
+    # 3. Inżynieria cech relacyjnych (różnicowych)
+    mart["diff_rest_days"] = mart["home_rest_days"] - mart["away_rest_days"]
+    mart["diff_roll_xg_5"] = mart["home_roll_xg_diff_5"] - mart["away_roll_xg_diff_5"]
+    mart["diff_roll_sotr_5"] = mart["home_roll_sotr_5"] - mart["away_roll_sotr_5"]
+
+    # 4. Selekcja kolumn: izolujemy metadane, cechy predykcyjne oraz target
+    metadata_cols = ["match_id", "match_date", "season", "home_team", "away_team"]
+    target_cols = ["FTR"]  # H, D, A
+    
+    # Wybieramy tylko cechy dostępne PRZED meczem
+    feature_cols = (
+        ["home_elo_pre", "away_elo_pre", "elo_diff_pre", "diff_rest_days", "diff_roll_xg_5", "diff_roll_sotr_5"]
+        + [c for c in mart.columns if c.startswith("home_roll_") or c.startswith("away_roll_")]
+        + ["home_rest_days", "away_rest_days"]
+    )
+
+    final_cols = metadata_cols + target_cols + feature_cols
+    mart_final = mart[final_cols].copy()
+
+    # 5. Czyszczenie wierszy z zimnego startu (np. pierwszy mecz w bazie)
+    # Zostawiamy wiersze, które mają komplet kluczowych cech
+    initial_len = len(mart_final)
+    mart_final.dropna(subset=["home_roll_xg_diff_5", "away_roll_xg_diff_5"], inplace=True)
+    dropped_rows = initial_len - len(mart_final)
+    
+    logger.info(
+        "Analytical Mart gotowy. Wymiary: %s. Odrzucono %d wierszy zimnego startu.",
+        mart_final.shape,
+        dropped_rows,
+    )
+    return mart_final
+
 
 if __name__ == "__main__":
-    merged_input_path = PROCESSED_DATA_DIR / "matches_merged.parquet"
-    if not merged_input_path.exists():
-        raise FileNotFoundError(f"Brak pliku bazowego: {merged_input_path}")
 
-    df_clean = pd.read_parquet(merged_input_path)
-    df_team_match = create_team_match_long_table(df_clean)
-    
-    df_with_rest = calculate_rest_days(df_team_match)
-    df_features_long = add_rolling_metrics(df_with_rest)    
+    # 1. Wczytanie oczyszczonych meczów
+    df_clean = pd.read_parquet(PROCESSED_DATA_DIR / "matches_merged.parquet")
+    if "match_id" not in df_clean.columns:
+        df_clean["match_id"] = [f"match_{i:05d}" for i in range(len(df_clean))]
 
-    # Zapis do warstwy interim/processed pod dalszy Feature Engineering
-    long_output_path = PROCESSED_DATA_DIR / "team_matches_long.parquet"
-    df_features_long.to_parquet(long_output_path, index=False)
-    logger.info("Zapisano tabelę bazową Long do: %s", long_output_path)
+    # 2. Obliczenie Elo na tabeli Wide
+    df_wide_elo = compute_historical_elo(df_clean)
+
+    # 3. Transformacja do tabeli Long i obliczenie metryk kroczących
+    df_long = create_team_match_long_table(df_clean)
+    df_long_rest = calculate_rest_days(df_long)
+    df_long_features = add_rolling_metrics(df_long_rest, windows=[3, 5])
+
+    # 4. Zbudowanie ostatecznej tabeli analitycznej Wide
+    analytical_mart = create_analytical_mart(df_wide_elo, df_long_features)
+
+    # 5. Zapis na dysk
+    mart_output_path = PROCESSED_DATA_DIR / "analytical_mart_wide.parquet"
+    analytical_mart.to_parquet(mart_output_path, index=False)
+    logger.info("Zapisano ostateczny zbiór analityczny do: %s", mart_output_path)
