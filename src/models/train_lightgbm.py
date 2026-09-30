@@ -11,7 +11,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from evaluate import (
+from src.models.evaluate import (
     CLASS_NAMES,
     TARGET_MAPPING,
     evaluate_probability_predictions,

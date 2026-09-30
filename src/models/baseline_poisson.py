@@ -11,7 +11,7 @@ import pandas as pd
 from scipy.stats import poisson
 from sklearn.linear_model import PoissonRegressor
 
-from evaluate import (
+from src.models.evaluate import (
     TARGET_MAPPING,
     evaluate_probability_predictions,
     temporal_train_val_test_split,
