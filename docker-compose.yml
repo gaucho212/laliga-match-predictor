@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  inference-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: laliga_quant_inference
+    volumes:
+      # Mapowanie folderu wyjściowego na dysk hosta
+      - ./artifacts:/app/artifacts
+    environment:
+      - PYTHONUNBUFFERED=1
